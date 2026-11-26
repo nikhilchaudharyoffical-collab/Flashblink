@@ -34,10 +34,9 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
-            <!-- Keeps app hidden from App Drawer while allowing direct launch -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
             <!-- Custom deep link: beatflash://open -->
