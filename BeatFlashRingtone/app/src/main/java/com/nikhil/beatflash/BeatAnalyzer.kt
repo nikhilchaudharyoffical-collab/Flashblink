@@ -8,6 +8,8 @@ import android.net.Uri
 import java.nio.ByteOrder
 import kotlin.math.sqrt
 
+data class BeatEvent(val timeMs: Long, val intensity: Float)
+
 object BeatAnalyzer {
 
     private const val PREFS_NAME = "beat_flash_prefs"
@@ -18,55 +20,50 @@ object BeatAnalyzer {
     private const val KEY_ENABLED = "service_enabled"
 
     fun isFeatureEnabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(KEY_ENABLED, true)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, true)
 
     fun setFeatureEnabled(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_ENABLED, enabled).apply()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, enabled).apply()
     }
 
     fun getSensitivity(context: Context): Float =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getFloat(KEY_SENSITIVITY, 1.45f)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getFloat(KEY_SENSITIVITY, 1.45f)
 
     fun setSensitivity(context: Context, value: Float) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putFloat(KEY_SENSITIVITY, value).apply()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putFloat(KEY_SENSITIVITY, value).apply()
     }
 
     fun getPulseDurationMs(context: Context): Long =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getLong(KEY_PULSE_MS, 75L)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getLong(KEY_PULSE_MS, 75L)
 
     fun setPulseDurationMs(context: Context, ms: Long) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().putLong(KEY_PULSE_MS, ms).apply()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putLong(KEY_PULSE_MS, ms).apply()
     }
 
-    fun saveBeats(context: Context, uri: Uri, beatsMs: List<Long>) {
-        val serialized = beatsMs.sorted().distinct().joinToString(",")
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+    fun saveBeats(context: Context, uri: Uri, beats: List<BeatEvent>) {
+        val serialized = beats.sortedBy { it.timeMs }.distinctBy { it.timeMs }
+            .joinToString(",") { "${it.timeMs}:${it.intensity.coerceIn(0f, 1f)}" }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString(KEY_URI, uri.toString())
             .putString(KEY_BEATS, serialized)
             .apply()
     }
 
-    /** Returns beats only when the cache belongs to [uri], preventing an old ringtone's pattern being reused. */
-    fun getCachedBeats(context: Context, uri: Uri? = null): List<Long> {
+    /** Reads the cached beat/intensity pairs, retaining compatibility with older timestamp-only caches. */
+    fun getCachedBeats(context: Context, uri: Uri? = null): List<BeatEvent> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (uri != null && prefs.getString(KEY_URI, null) != uri.toString()) return emptyList()
-        return prefs.getString(KEY_BEATS, "")
-            ?.split(",")
-            ?.mapNotNull { it.toLongOrNull() }
-            ?.filter { it >= 0L }
-            ?.sorted()
-            .orEmpty()
+        return prefs.getString(KEY_BEATS, "")?.split(",")?.mapNotNull { item ->
+            val parts = item.split(':', limit = 2)
+            val time = parts.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+            if (time < 0L) return@mapNotNull null
+            val intensity = parts.getOrNull(1)?.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.65f
+            BeatEvent(time, intensity)
+        }?.sortedBy { it.timeMs }.orEmpty()
     }
 
-    /** Decodes ringtone audio and returns detected onset timestamps; empty means analysis was unavailable. */
-    fun analyzeRingtoneBeats(context: Context, uri: Uri, sensitivity: Float = 1.45f): List<Long> {
+    /** Decodes ringtone audio and returns cached onset timestamps with normalized relative strengths. */
+    fun analyzeRingtoneBeats(context: Context, uri: Uri, sensitivity: Float = 1.45f): List<BeatEvent> {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -86,24 +83,23 @@ object BeatAnalyzer {
             extractor.selectTrack(audioTrackIndex)
             val mime = format.getString(MediaFormat.KEY_MIME) ?: return emptyList()
             val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
+            val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
-            // 10 ms frames give finer onset placement than the previous 25 ms analysis hop.
             val hopMs = 10
             val samplesPerHop = (sampleRate * hopMs / 1000).coerceAtLeast(1)
-            val rmsList = ArrayList<Float>()
-            var currentSumSq = 0.0
-            var currentCount = 0
-            var decodedFrames = 0
-            val maxFrames = sampleRate * 35
+            val rms = ArrayList<Float>()
+            var sumSq = 0.0
+            var sampleCount = 0
+            var decodedSamples = 0
+            val maxSamples = sampleRate * 35
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
 
-            while (!outputDone && decodedFrames < maxFrames) {
+            while (!outputDone && decodedSamples < maxSamples) {
                 if (!inputDone) {
                     val inputIndex = codec.dequeueInputBuffer(10_000)
                     if (inputIndex >= 0) {
@@ -127,10 +123,10 @@ object BeatAnalyzer {
                         output.position(info.offset)
                         output.limit(info.offset + info.size)
                         val pcm = output.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                        while (pcm.hasRemaining() && decodedFrames < maxFrames) {
+                        while (pcm.hasRemaining() && decodedSamples < maxSamples) {
                             var mono = 0f
                             var channelsRead = 0
-                            repeat(channelCount) {
+                            repeat(channels) {
                                 if (pcm.hasRemaining()) {
                                     mono += pcm.get() / 32768f
                                     channelsRead++
@@ -138,23 +134,23 @@ object BeatAnalyzer {
                             }
                             if (channelsRead > 0) {
                                 mono /= channelsRead
-                                currentSumSq += mono * mono
-                                currentCount++
-                                decodedFrames++
-                                if (currentCount >= samplesPerHop) {
-                                    rmsList.add(sqrt(currentSumSq / currentCount).toFloat())
-                                    currentSumSq = 0.0
-                                    currentCount = 0
+                                sumSq += mono * mono
+                                sampleCount++
+                                decodedSamples++
+                                if (sampleCount >= samplesPerHop) {
+                                    rms.add(sqrt(sumSq / sampleCount).toFloat())
+                                    sumSq = 0.0
+                                    sampleCount = 0
                                 }
                             }
                         }
                     }
-                    val endOfStream = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                    val ended = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                     codec.releaseOutputBuffer(outputIndex, false)
-                    if (endOfStream) outputDone = true
+                    if (ended) outputDone = true
                 }
             }
-            return extractPeaksFromRms(rmsList, hopMs, sensitivity)
+            return extractPeaksFromRms(rms, hopMs, sensitivity)
         } catch (e: Exception) {
             e.printStackTrace()
             return emptyList()
@@ -165,11 +161,12 @@ object BeatAnalyzer {
         }
     }
 
-    private fun extractPeaksFromRms(rms: List<Float>, hopMs: Int, thresholdMult: Float): List<Long> {
+    private fun extractPeaksFromRms(rms: List<Float>, hopMs: Int, threshold: Float): List<BeatEvent> {
         if (rms.size < 10) return emptyList()
-        val window = 20 // 200 ms local energy context at 10 ms per frame
+        val window = 20
         val minGapFrames = (130 / hopMs).coerceAtLeast(1)
-        val beats = ArrayList<Long>()
+        val maxEnergy = rms.maxOrNull()?.coerceAtLeast(0.001f) ?: return emptyList()
+        val beats = ArrayList<BeatEvent>()
         var lastBeat = -minGapFrames
 
         for (i in 1 until rms.lastIndex) {
@@ -177,10 +174,14 @@ object BeatAnalyzer {
             val end = (i + window / 2).coerceAtMost(rms.lastIndex)
             var sum = 0f
             for (j in start..end) sum += rms[j]
-            val localAverage = (sum / (end - start + 1)) + 0.005f
+            val localAverage = sum / (end - start + 1) + 0.005f
+            val ratio = rms[i] / localAverage
             val isPeak = rms[i] >= rms[i - 1] && rms[i] > rms[i + 1]
-            if (rms[i] > 0.04f && rms[i] / localAverage >= thresholdMult && isPeak && i - lastBeat >= minGapFrames) {
-                beats.add(i.toLong() * hopMs)
+            if (rms[i] > 0.04f && ratio >= threshold && isPeak && i - lastBeat >= minGapFrames) {
+                val relativeEnergy = (rms[i] / maxEnergy).coerceIn(0f, 1f)
+                val onsetProminence = ((ratio - threshold) / threshold.coerceAtLeast(0.1f)).coerceIn(0f, 1f)
+                val intensity = (relativeEnergy * 0.7f + onsetProminence * 0.3f).coerceIn(0f, 1f)
+                beats.add(BeatEvent(i.toLong() * hopMs, intensity))
                 lastBeat = i
             }
         }

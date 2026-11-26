@@ -22,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 class FlashBeatService : Service() {
 
@@ -29,6 +30,7 @@ class FlashBeatService : Service() {
     private var flashJob: Job? = null
     private lateinit var cameraManager: CameraManager
     private var backCameraId: String? = null
+    private var maxTorchStrength = 1
 
     companion object {
         const val ACTION_START = "com.nikhil.beatflash.START_FLASH"
@@ -68,12 +70,10 @@ class FlashBeatService : Service() {
     private fun startBeatSyncLoop(ringStartElapsed: Long) {
         flashJob?.cancel()
         val ringtoneUri = SystemRingtoneHelper.getCurrentSystemRingtoneUri(this)
-        val beats = BeatAnalyzer.getCachedBeats(this, ringtoneUri).filter { it >= 0L }
+        val beats = BeatAnalyzer.getCachedBeats(this, ringtoneUri)
         val durationMs = ringtoneUri?.let(::getRingtoneDurationMs) ?: 0L
-        val usableBeats = beats.filter { durationMs <= 0L || it < durationMs }
-        val pulseMs = BeatAnalyzer.getPulseDurationMs(this).coerceIn(30L, 180L)
-
-        // Never invent a metronome pattern: it looks like sync but cannot match the selected ringtone.
+        val usableBeats = beats.filter { it.timeMs >= 0L && (durationMs <= 0L || it.timeMs < durationMs) }
+        val configuredPulse = BeatAnalyzer.getPulseDurationMs(this).coerceIn(30L, 180L)
         if (usableBeats.isEmpty() || durationMs <= 0L) {
             stopBlinkingAndSelf()
             return
@@ -81,27 +81,28 @@ class FlashBeatService : Service() {
 
         flashJob = serviceScope.launch {
             try {
-                var nextCycle = 0L
-                var beatIndex = 0
+                var cycle = 0L
+                var index = 0
                 while (isActive) {
-                    val beatOffset = usableBeats[beatIndex]
-                    val deadline = ringStartElapsed + nextCycle * durationMs + beatOffset
-                    val waitMs = deadline - SystemClock.elapsedRealtime()
-                    if (waitMs > 0L) delay(waitMs)
-
+                    val beat = usableBeats[index]
+                    val deadline = ringStartElapsed + cycle * durationMs + beat.timeMs
+                    val remaining = deadline - SystemClock.elapsedRealtime()
+                    if (remaining > 0L) delay(remaining)
                     if (!isActive) break
+
                     val lateness = SystemClock.elapsedRealtime() - deadline
-                    // Skip stale torch events instead of showing an obviously delayed flash.
                     if (lateness <= LATE_BEAT_TOLERANCE_MS) {
-                        setTorch(true)
+                        val pulseMs = ((35f + beat.intensity * 75f) * configuredPulse / 75f)
+                            .roundToInt().toLong().coerceIn(30L, 180L)
+                        setTorchForBeat(beat.intensity)
                         delay(pulseMs)
                         setTorch(false)
                     }
 
-                    beatIndex++
-                    if (beatIndex >= usableBeats.size) {
-                        beatIndex = 0
-                        nextCycle++
+                    index++
+                    if (index >= usableBeats.size) {
+                        index = 0
+                        cycle++
                     }
                 }
             } finally {
@@ -130,6 +131,21 @@ class FlashBeatService : Service() {
         stopSelf()
     }
 
+    private fun setTorchForBeat(intensity: Float) {
+        val id = backCameraId ?: return
+        val level = (1 + intensity.coerceIn(0f, 1f) * (maxTorchStrength - 1)).roundToInt()
+            .coerceIn(1, maxTorchStrength)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && maxTorchStrength > 1) {
+            try {
+                cameraManager.turnOnTorchWithStrengthLevel(id, level)
+                return
+            } catch (_: Exception) {
+                // Some OEM camera HALs advertise strength but reject the call; fall back to binary torch.
+            }
+        }
+        setTorch(true)
+    }
+
     private fun setTorch(enabled: Boolean) {
         val id = backCameraId ?: return
         try { cameraManager.setTorchMode(id, enabled) } catch (_: Exception) { }
@@ -138,8 +154,14 @@ class FlashBeatService : Service() {
     private fun findRearFlashCameraId(): String? = try {
         cameraManager.cameraIdList.firstOrNull { id ->
             val chars = cameraManager.getCameraCharacteristics(id)
-            chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
-                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            if (hasFlash && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    maxTorchStrength = chars.get(CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL) ?: 1
+                }
+                true
+            } else false
         }
     } catch (_: Exception) { null }
 

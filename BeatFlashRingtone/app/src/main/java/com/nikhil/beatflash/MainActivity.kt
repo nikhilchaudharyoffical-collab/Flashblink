@@ -46,9 +46,8 @@ class MainActivity : AppCompatActivity() {
     private var testJob: Job? = null
     private var mediaPlayer: MediaPlayer? = null
     private var isTesting = false
-
     private var activeRingtoneUri: Uri? = null
-    private var currentBeats: List<Long> = emptyList()
+    private var currentBeats: List<BeatEvent> = emptyList()
 
     private val systemRingtonePickerLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -59,29 +58,21 @@ class MainActivity : AppCompatActivity() {
                     @Suppress("DEPRECATION")
                     result.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
                 }
-                if (uri != null) {
-                    applyNewRingtoneDirectly(uri, SystemRingtoneHelper.getRingtoneTitle(this, uri))
-                }
+                if (uri != null) applyNewRingtoneDirectly(uri, SystemRingtoneHelper.getRingtoneTitle(this, uri))
             }
         }
 
     private val customAudioPickerLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-            if (uri != null) {
-                val name = resolveFileName(uri)
-                applyNewRingtoneDirectly(uri, name)
-            }
+            if (uri != null) applyNewRingtoneDirectly(uri, resolveFileName(uri))
         }
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            updatePermissionStatus()
-        }
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { updatePermissionStatus() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         bindViews()
         setupListeners()
         loadInitialState()
@@ -110,36 +101,25 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadInitialState() {
         switchEnable.isChecked = BeatAnalyzer.isFeatureEnabled(this)
-
-        val savedSens = BeatAnalyzer.getSensitivity(this)
-        val sensProgress = ((savedSens - 1.10f) * 100).toInt().coerceIn(0, 100)
-        seekSensitivity.progress = sensProgress
-        tvSensitivityVal.text = String.format("%.2fx", savedSens)
-
-        val savedPulse = BeatAnalyzer.getPulseDurationMs(this)
-        seekPulse.progress = (savedPulse - 30L).toInt().coerceIn(0, 150)
-        tvPulseVal.text = "${savedPulse} ms"
-
+        val sensitivity = BeatAnalyzer.getSensitivity(this)
+        seekSensitivity.progress = ((sensitivity - 1.10f) * 100).toInt().coerceIn(0, 100)
+        tvSensitivityVal.text = String.format("%.2fx", sensitivity)
+        val pulse = BeatAnalyzer.getPulseDurationMs(this)
+        seekPulse.progress = (pulse - 30L).toInt().coerceIn(0, 150)
+        tvPulseVal.text = "$pulse ms"
         activeRingtoneUri = SystemRingtoneHelper.getCurrentSystemRingtoneUri(this)
-        currentBeats = BeatAnalyzer.getCachedBeats(this)
-        refreshSystemRingtoneDisplay()
-
-        // Analyze current system ringtone on first launch if no cache exists
         activeRingtoneUri?.let { uri ->
-            analyzeAndCacheBeats(uri, savedSens)
+            currentBeats = BeatAnalyzer.getCachedBeats(this, uri)
+            if (currentBeats.isEmpty()) analyzeAndCacheBeats(uri, sensitivity)
         }
+        refreshSystemRingtoneDisplay()
     }
 
     private fun setupListeners() {
-        switchEnable.setOnCheckedChangeListener { _, isChecked ->
-            BeatAnalyzer.setFeatureEnabled(this, isChecked)
-            tvStatus.text = if (isChecked) {
-                "Status: Active for incoming calls"
-            } else {
-                "Status: Paused"
-            }
+        switchEnable.setOnCheckedChangeListener { _, checked ->
+            BeatAnalyzer.setFeatureEnabled(this, checked)
+            tvStatus.text = if (checked) "Status: Active for incoming calls" else "Status: Paused"
         }
-
         btnPickSystem.setOnClickListener {
             stopLiveTest()
             if (!ensureWriteSettingsPermission()) return@setOnClickListener
@@ -152,47 +132,32 @@ class MainActivity : AppCompatActivity() {
             }
             systemRingtonePickerLauncher.launch(intent)
         }
-
         btnPickCustom.setOnClickListener {
             stopLiveTest()
             if (!ensureWriteSettingsPermission()) return@setOnClickListener
             customAudioPickerLauncher.launch(arrayOf("audio/*"))
         }
-
-        btnTestBeat.setOnClickListener {
-            if (isTesting) {
-                stopLiveTest()
-            } else {
-                startLiveTest()
-            }
-        }
-
-        btnPermissions.setOnClickListener {
-            requestAllRequiredPermissions()
-        }
+        btnTestBeat.setOnClickListener { if (isTesting) stopLiveTest() else startLiveTest() }
+        btnPermissions.setOnClickListener { requestAllRequiredPermissions() }
 
         seekSensitivity.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                val sens = 1.10f + (progress / 100f)
-                tvSensitivityVal.text = String.format("%.2fx", sens)
+                tvSensitivityVal.text = String.format("%.2fx", 1.10f + progress / 100f)
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {
-                val sens = 1.10f + ((sb?.progress ?: 35) / 100f)
-                BeatAnalyzer.setSensitivity(this@MainActivity, sens)
-                activeRingtoneUri?.let { analyzeAndCacheBeats(it, sens) }
+                val value = 1.10f + ((sb?.progress ?: 35) / 100f)
+                BeatAnalyzer.setSensitivity(this@MainActivity, value)
+                activeRingtoneUri?.let { analyzeAndCacheBeats(it, value) }
             }
         })
-
         seekPulse.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                val pulse = 30L + progress
-                tvPulseVal.text = "$pulse ms"
+                tvPulseVal.text = "${30L + progress} ms base"
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {
-                val pulse = 30L + (sb?.progress ?: 45)
-                BeatAnalyzer.setPulseDurationMs(this@MainActivity, pulse)
+                BeatAnalyzer.setPulseDurationMs(this@MainActivity, 30L + (sb?.progress ?: 45))
             }
         })
     }
@@ -200,18 +165,15 @@ class MainActivity : AppCompatActivity() {
     private fun applyNewRingtoneDirectly(pickedUri: Uri, displayName: String) {
         tvStatus.text = "Status: Updating system ringtone & analyzing beats..."
         uiScope.launch {
-            val appliedUri = withContext(Dispatchers.IO) {
+            val applied = withContext(Dispatchers.IO) {
                 SystemRingtoneHelper.applyAsSystemRingtone(this@MainActivity, pickedUri, displayName)
             }
-            if (appliedUri != null) {
-                activeRingtoneUri = appliedUri
+            if (applied != null) {
+                activeRingtoneUri = applied
+                currentBeats = emptyList()
                 refreshSystemRingtoneDisplay()
-                analyzeAndCacheBeats(appliedUri, BeatAnalyzer.getSensitivity(this@MainActivity))
-                Toast.makeText(
-                    this@MainActivity,
-                    "System Ringtone updated directly!",
-                    Toast.LENGTH_SHORT
-                ).show()
+                analyzeAndCacheBeats(applied, BeatAnalyzer.getSensitivity(this@MainActivity))
+                Toast.makeText(this@MainActivity, "System ringtone updated", Toast.LENGTH_SHORT).show()
             } else {
                 tvStatus.text = "Status: Failed to update system ringtone (Check Modify System Settings)"
             }
@@ -224,10 +186,13 @@ class MainActivity : AppCompatActivity() {
             val beats = withContext(Dispatchers.IO) {
                 BeatAnalyzer.analyzeRingtoneBeats(this@MainActivity, uri, sensitivity)
             }
+            if (activeRingtoneUri != uri) return@launch
             currentBeats = beats
             BeatAnalyzer.saveBeats(this@MainActivity, uri, beats)
-            tvBeatStats.text = "Detected Beats: ${beats.size} pulses synced to ringtone"
-            tvStatus.text = "Status: Ready — Synced with system ringtone"
+            tvBeatStats.text = if (beats.isEmpty()) "No reliable beats detected for this ringtone" else
+                "Detected Beats: ${beats.size} · intensity-aware sync"
+            tvStatus.text = if (beats.isEmpty()) "Status: Beat analysis unavailable for this ringtone" else
+                "Status: Ready — synced beat data cached"
         }
     }
 
@@ -237,33 +202,30 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "No ringtone found to test", Toast.LENGTH_SHORT).show()
             return
         }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestAllRequiredPermissions()
             return
         }
-
-        isTesting = true
-        btnTestBeat.text = "Stop Live Beat Test"
-        tvStatus.text = "Status: Testing ringtone + beat flash..."
-
+        val beats = currentBeats.ifEmpty { BeatAnalyzer.getCachedBeats(this, uri) }
+        if (beats.isEmpty()) {
+            Toast.makeText(this, "Analyze the selected ringtone before testing", Toast.LENGTH_SHORT).show()
+            return
+        }
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val camId = cameraManager.cameraIdList.firstOrNull { id ->
-            val chars = cameraManager.getCameraCharacteristics(id)
-            chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
-                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        val cameraId = cameraManager.cameraIdList.firstOrNull { id ->
+            val characteristics = cameraManager.getCameraCharacteristics(id)
+            characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true &&
+                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        }
+        if (cameraId == null) {
+            Toast.makeText(this, "No rear camera flash available", Toast.LENGTH_SHORT).show()
+            return
         }
 
         try {
             mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
+                setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 setDataSource(this@MainActivity, uri)
                 isLooping = true
                 prepare()
@@ -275,34 +237,40 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val beatsToPlay = currentBeats.ifEmpty { BeatAnalyzer.getCachedBeats(this) }
-        val pulseMs = BeatAnalyzer.getPulseDurationMs(this)
-
+        isTesting = true
+        btnTestBeat.text = "Stop Live Beat Test"
+        tvStatus.text = "Status: Testing ringtone + intensity-aware flash..."
+        val configuredPulse = BeatAnalyzer.getPulseDurationMs(this).coerceIn(30L, 180L)
         testJob = uiScope.launch(Dispatchers.Default) {
             try {
                 while (isActive && isTesting) {
-                    val posMs = try {
-                        mediaPlayer?.currentPosition?.toLong() ?: 0L
-                    } catch (_: Exception) {
-                        0L
-                    }
-                    val startRef = SystemClock.elapsedRealtime() - posMs
-
-                    for (beatMs in beatsToPlay) {
+                    for (beat in beats) {
                         if (!isActive || !isTesting) break
-                        val nowElapsed = SystemClock.elapsedRealtime() - startRef
-                        val waitMs = beatMs - nowElapsed
-                        if (waitMs > 0) delay(waitMs)
+                        // Re-read MediaPlayer's playback head while waiting, so scheduler drift does not accumulate.
+                        while (isActive && isTesting) {
+                            val position = try { mediaPlayer?.currentPosition?.toLong() ?: break } catch (_: Exception) { break }
+                            if (position >= beat.timeMs) break
+                            delay((beat.timeMs - position).coerceAtMost(20L).coerceAtLeast(1L))
+                        }
                         if (!isActive || !isTesting) break
-
-                        camId?.let { try { cameraManager.setTorchMode(it, true) } catch (_: Exception) {} }
+                        val pulseMs = ((35f + beat.intensity * 75f) * configuredPulse / 75f)
+                            .toLong().coerceIn(30L, 180L)
+                        try { cameraManager.setTorchMode(cameraId, true) } catch (_: Exception) { }
                         delay(pulseMs)
-                        camId?.let { try { cameraManager.setTorchMode(it, false) } catch (_: Exception) {} }
+                        try { cameraManager.setTorchMode(cameraId, false) } catch (_: Exception) { }
                     }
-                    delay(150L)
+                    if (isActive && isTesting) {
+                        val lastBeat = beats.last().timeMs
+                        // Wait for MediaPlayer's loop point rather than adding a fixed sleep that drifts.
+                        while (isActive && isTesting) {
+                            val position = try { mediaPlayer?.currentPosition?.toLong() ?: break } catch (_: Exception) { break }
+                            if (position < lastBeat) break
+                            delay(20L)
+                        }
+                    }
                 }
             } finally {
-                camId?.let { try { cameraManager.setTorchMode(it, false) } catch (_: Exception) {} }
+                try { cameraManager.setTorchMode(cameraId, false) } catch (_: Exception) { }
             }
         }
     }
@@ -310,79 +278,51 @@ class MainActivity : AppCompatActivity() {
     private fun stopLiveTest() {
         isTesting = false
         testJob?.cancel()
-        try {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
-        } catch (_: Exception) { }
+        try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) { }
         mediaPlayer = null
-        btnTestBeat.text = "Test Ringtone + Beat Flash"
-        tvStatus.text = if (BeatAnalyzer.isFeatureEnabled(this)) {
-            "Status: Active for incoming calls"
-        } else {
-            "Status: Paused"
-        }
+        if (::btnTestBeat.isInitialized) btnTestBeat.text = "Test Ringtone + Beat Flash"
+        if (::tvStatus.isInitialized) tvStatus.text = if (BeatAnalyzer.isFeatureEnabled(this))
+            "Status: Active for incoming calls" else "Status: Paused"
     }
 
     private fun refreshSystemRingtoneDisplay() {
-        val currentUri = SystemRingtoneHelper.getCurrentSystemRingtoneUri(this)
-        activeRingtoneUri = currentUri
-        val title = SystemRingtoneHelper.getRingtoneTitle(this, currentUri)
-        tvCurrentRingtone.text = "Active System Ringtone: $title"
+        val uri = SystemRingtoneHelper.getCurrentSystemRingtoneUri(this)
+        activeRingtoneUri = uri
+        tvCurrentRingtone.text = "Active System Ringtone: ${SystemRingtoneHelper.getRingtoneTitle(this, uri)}"
     }
 
     private fun ensureWriteSettingsPermission(): Boolean {
         if (!SystemRingtoneHelper.canWriteSystemSettings(this)) {
-            Toast.makeText(
-                this,
-                "Please allow 'Modify System Settings' so ringtone changes directly in phone settings",
-                Toast.LENGTH_LONG
-            ).show()
-            val intent = Intent(
-                Settings.ACTION_MANAGE_WRITE_SETTINGS,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
+            Toast.makeText(this, "Please allow 'Modify System Settings' so ringtone changes directly in phone settings", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
             return false
         }
         return true
     }
 
     private fun requestAllRequiredPermissions() {
-        val perms = mutableListOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.READ_PHONE_STATE
-        )
+        val permissions = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.READ_PHONE_STATE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms.add(Manifest.permission.READ_MEDIA_AUDIO)
-            perms.add(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-        permissionLauncher.launch(perms.toTypedArray())
+            permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        } else permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        permissionLauncher.launch(permissions.toTypedArray())
         ensureWriteSettingsPermission()
     }
 
     private fun updatePermissionStatus() {
-        val camOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
-        val phoneOk = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) ==
-            PackageManager.PERMISSION_GRANTED
-        val writeOk = SystemRingtoneHelper.canWriteSystemSettings(this)
-
-        btnPermissions.text = if (camOk && phoneOk && writeOk) {
-            "All Permissions Granted ✓"
-        } else {
-            "Grant Required Permissions (Camera, Call, System Settings)"
-        }
+        val cameraOk = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val phoneOk = ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        btnPermissions.text = if (cameraOk && phoneOk && SystemRingtoneHelper.canWriteSystemSettings(this))
+            "All Permissions Granted ✓" else "Grant Required Permissions (Camera, Call, System Settings)"
     }
 
     private fun resolveFileName(uri: Uri): String {
         var name = "Custom_Ringtone"
-        val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
-        cursor?.use {
-            if (it.moveToFirst()) {
-                val idx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) name = it.getString(idx)
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0) name = cursor.getString(index)
             }
         }
         return name
