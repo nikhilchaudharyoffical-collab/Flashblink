@@ -34,9 +34,20 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
+            <!-- Keeps app hidden from App Drawer while allowing direct launch -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.CATEGORY_LAUNCHER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <!-- Custom deep link: beatflash://open -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="open"
+                    android:scheme="beatflash" />
             </intent-filter>
         </activity>
 
@@ -50,10 +61,5 @@
         </receiver>
 
         <service
-            android:name=".FlashBeatService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="camera" />
-
-    </application>
-</manifest>
+            android:name=".Flash
+            
