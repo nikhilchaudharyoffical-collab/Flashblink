@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView android:background="#0F172A" android:fillViewport="true" android:layout_height="match_parent" android:layout_width="match_parent" xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <LinearLayout android:layout_height="wrap_content" android:layout_width="match_parent" android:orientation="vertical" android:padding="20dp">
+
+        <TextView android:layout_height="wrap_content" android:layout_width="wrap_content" android:text="BeatFlash Ringtone" android:textColor="#F8FAFC" android:textSize="26sp" android:textStyle="bold"/>
+
+        <TextView android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_width="wrap_content" android:text="Syncs rear LED flash with your actual system incoming ringtone beats" android:textColor="#94A3B8" android:textSize="14sp"/>
+
+        <!-- Master Toggle Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            app:cardBackgroundColor="#1E293B"
+            app:cardCornerRadius="16dp"
+            app:strokeWidth="0dp">
+
+            <LinearLayout android:layout_height="wrap_content" android:layout_width="match_parent" android:orientation="vertical" android:padding="16dp">
+
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/switchEnable"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="Incoming Call Beat Flash"
+                    android:textColor="#F8FAFC"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <TextView android:id="@+id/tvStatus" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_width="wrap_content" android:text="Status: Active for incoming calls" android:textColor="#38BDF8" android:textSize="13sp"/>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Ringtone Management Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="#1E293B"
+            app:cardCornerRadius="16dp"
+            app:strokeWidth="0dp">
+
+            <LinearLayout android:layout_height="wrap_content" android:layout_width="match_parent" android:orientation="vertical" android:padding="16dp">
+
+                <TextView android:id="@+id/tvCurrentRingtone" android:layout_height="wrap_content" android:layout_width="wrap_content" android:text="Active System Ringtone: Loading..." android:textColor="#F8FAFC" android:textSize="16sp" android:textStyle="bold"/>
+
+                <TextView android:id="@+id/tvBeatStats" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_width="wrap_content" android:text="Detected Beats: --" android:textColor="#A7F3D0" android:textSize="13sp"/>
+
+                <Button android:backgroundTint="#2563EB" android:id="@+id/btnPickSystem" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:layout_width="match_parent" android:text="Change System Ringtone (Built-in)" android:textColor="#FFFFFF"/>
+
+                <Button android:backgroundTint="#0D9488" android:id="@+id/btnPickCustom" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:layout_width="match_parent" android:text="Set Custom MP3 / Audio as System Ringtone" android:textColor="#FFFFFF"/>
+
+                <Button android:backgroundTint="#E11D48" android:id="@+id/btnTestBeat" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:layout_width="match_parent" android:text="Test Ringtone + Beat Flash" android:textColor="#FFFFFF"/>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Tuning Card -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="#1E293B"
+            app:cardCornerRadius="16dp"
+            app:strokeWidth="0dp">
+
+            <LinearLayout android:layout_height="wrap_content" android:layout_width="match_parent" android:orientation="vertical" android:padding="16dp">
+
+                <LinearLayout android:layout_height="wrap_content" android:layout_width="match_parent" android:orientation="horizontal">
+
+                    <TextView android:layout_height="wrap_content" android:layout_weight="1" android:layout_width="0dp" android:text="Beat Detection Threshold" android:textColor="#F8FAFC" android:textSize="14sp"/>
+
+                    <TextView android:id="@+id/tvSensitivityVal" android:layout_height="wrap_content" android:layout_width="wrap_content" android:text="1.45x" android:textColor="#38BDF8" android:textStyle="bold"/>
+                </LinearLayout>
+
+                <SeekBar android:id="@+id/seekSensitivity" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_width="match_parent" android:max="100" android:progress="35"/>
+
+                <LinearLayout android:layout_height="wrap_content" android:layout_marginTop="14dp" android:layout_width="match_parent" android:orientation="horizontal">
+
+                    <TextView android:layout_height="wrap_content" android:layout_weight="1" android:layout_width="0dp" android:text="Flash Pulse Duration" android:textColor="#F8FAFC" android:textSize="14sp"/>
+
+                    <TextView android:id="@+id/tvPulseVal" android:layout_height="wrap_content" android:layout_width="wrap_content" android:text="75 ms" android:textColor="#38BDF8" android:textStyle="bold"/>
+                </LinearLayout>
+
+                <SeekBar android:id="@+id/seekPulse" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:layout_width="match_parent" android:max="150" android:progress="45"/>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <Button android:backgroundTint="#334155" android:id="@+id/btnPermissions" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:layout_width="match_parent" android:text="Grant Required Permissions" android:textColor="#F8FAFC"/>
+
+    </LinearLayout>
+</ScrollView>
