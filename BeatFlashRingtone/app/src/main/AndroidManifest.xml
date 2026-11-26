@@ -61,5 +61,11 @@
         </receiver>
 
         <service
-            android:name=".Flash
-            
+            android:name=".FlashService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
+
+    </application>
+
+</manifest>
