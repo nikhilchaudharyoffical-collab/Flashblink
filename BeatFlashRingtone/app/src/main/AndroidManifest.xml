@@ -2,25 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Camera & Flashlight control -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="true" />
-
-    <!-- Detect incoming calls -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-
-    <!-- Modify actual system ringtone directly -->
-    <uses-permission
-        android:name="android.permission.WRITE_SETTINGS"
-        tools:ignore="ProtectedPermissions" />
-
-    <!-- Read audio files to set as system ringtone -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-
-    <!-- Foreground service for reliable flash sync during calls -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -31,41 +18,31 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.BeatFlashRingtone">
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
+        <activity android:name=".MainActivity" android:exported="true">
             <!-- Deliberately omit LAUNCHER: open via the beatflash://open deep link. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-
-            <!-- Custom deep link: beatflash://open -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:host="open"
-                    android:scheme="beatflash" />
+                <data android:host="open" android:scheme="beatflash" />
             </intent-filter>
         </activity>
 
-        <receiver
-            android:name=".CallStateReceiver"
-            android:enabled="true"
-            android:exported="true">
+        <receiver android:name=".CallStateReceiver" android:enabled="true" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.PHONE_STATE" />
             </intent-filter>
         </receiver>
 
+        <!-- The service class is FlashBeatService; the previous manifest registered a nonexistent FlashService. -->
         <service
-            android:name=".FlashService"
+            android:name=".FlashBeatService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="camera" />
-
     </application>
-
 </manifest>

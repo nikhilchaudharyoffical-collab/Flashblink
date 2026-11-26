@@ -45,7 +45,7 @@ object BeatAnalyzer {
     }
 
     fun saveBeats(context: Context, uri: Uri, beatsMs: List<Long>) {
-        val serialized = beatsMs.joinToString(",")
+        val serialized = beatsMs.sorted().distinct().joinToString(",")
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_URI, uri.toString())
@@ -53,21 +53,19 @@ object BeatAnalyzer {
             .apply()
     }
 
-    fun getCachedBeats(context: Context): List<Long> {
+    /** Returns beats only when the cache belongs to [uri], preventing an old ringtone's pattern being reused. */
+    fun getCachedBeats(context: Context, uri: Uri? = null): List<Long> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_BEATS, "") ?: ""
-        if (raw.isBlank()) return defaultFallbackBeats()
-        return raw.split(",").mapNotNull { it.toLongOrNull() }.ifEmpty { defaultFallbackBeats() }
+        if (uri != null && prefs.getString(KEY_URI, null) != uri.toString()) return emptyList()
+        return prefs.getString(KEY_BEATS, "")
+            ?.split(",")
+            ?.mapNotNull { it.toLongOrNull() }
+            ?.filter { it >= 0L }
+            ?.sorted()
+            .orEmpty()
     }
 
-    fun defaultFallbackBeats(): List<Long> {
-        // Fallback rhythmic pattern every 450ms up to 30 seconds
-        return (0L..30000L step 450L).toList()
-    }
-
-    /**
-     * Decodes up to 35 seconds of any ringtone URI into raw PCM and extracts beat onset timestamps (ms).
-     */
+    /** Decodes ringtone audio and returns detected onset timestamps; empty means analysis was unavailable. */
     fun analyzeRingtoneBeats(context: Context, uri: Uri, sensitivity: Float = 1.45f): List<Long> {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -75,136 +73,117 @@ object BeatAnalyzer {
             extractor.setDataSource(context, uri, null)
             var audioTrackIndex = -1
             var format: MediaFormat? = null
-
             for (i in 0 until extractor.trackCount) {
                 val trackFormat = extractor.getTrackFormat(i)
-                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: ""
-                if (mime.startsWith("audio/")) {
+                if (trackFormat.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
                     audioTrackIndex = i
                     format = trackFormat
                     break
                 }
             }
-
-            if (audioTrackIndex < 0 || format == null) return defaultFallbackBeats()
+            if (audioTrackIndex < 0 || format == null) return emptyList()
 
             extractor.selectTrack(audioTrackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return emptyList()
             val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-
+            val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
-            val hopMs = 25
-            val samplesPerHop = (sampleRate * hopMs) / 1000
+            // 10 ms frames give finer onset placement than the previous 25 ms analysis hop.
+            val hopMs = 10
+            val samplesPerHop = (sampleRate * hopMs / 1000).coerceAtLeast(1)
             val rmsList = ArrayList<Float>()
             var currentSumSq = 0.0
             var currentCount = 0
+            var decodedFrames = 0
+            val maxFrames = sampleRate * 35
+            val info = MediaCodec.BufferInfo()
+            var inputDone = false
+            var outputDone = false
 
-            val bufferInfo = MediaCodec.BufferInfo()
-            var isInputDone = false
-            var isOutputDone = false
-            val maxSamplesToRead = sampleRate * 35 // Analyze max 35s of ringtone
-            var totalSamplesRead = 0
-
-            while (!isOutputDone && totalSamplesRead < maxSamplesToRead) {
-                if (!isInputDone) {
-                    val inIndex = codec.dequeueInputBuffer(10_000)
-                    if (inIndex >= 0) {
-                        val inputBuffer = codec.getInputBuffer(inIndex)!!
-                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                        if (sampleSize < 0) {
-                            codec.queueInputBuffer(inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            isInputDone = true
+            while (!outputDone && decodedFrames < maxFrames) {
+                if (!inputDone) {
+                    val inputIndex = codec.dequeueInputBuffer(10_000)
+                    if (inputIndex >= 0) {
+                        val input = codec.getInputBuffer(inputIndex) ?: return emptyList()
+                        input.clear()
+                        val size = extractor.readSampleData(input, 0)
+                        if (size < 0) {
+                            codec.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
                         } else {
-                            codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                            codec.queueInputBuffer(inputIndex, 0, size, extractor.sampleTime, 0)
                             extractor.advance()
                         }
                     }
                 }
 
-                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
-                if (outIndex >= 0) {
-                    val outBuffer = codec.getOutputBuffer(outIndex)
-                    if (outBuffer != null && bufferInfo.size > 0) {
-                        outBuffer.position(bufferInfo.offset)
-                        outBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                        val shortBuffer = outBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-
-                        while (shortBuffer.hasRemaining()) {
-                            var monoSample = 0f
-                            for (c in 0 until channelCount) {
-                                if (shortBuffer.hasRemaining()) {
-                                    monoSample += shortBuffer.get() / 32768f
+                val outputIndex = codec.dequeueOutputBuffer(info, 10_000)
+                if (outputIndex >= 0) {
+                    val output = codec.getOutputBuffer(outputIndex)
+                    if (output != null && info.size > 0) {
+                        output.position(info.offset)
+                        output.limit(info.offset + info.size)
+                        val pcm = output.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                        while (pcm.hasRemaining() && decodedFrames < maxFrames) {
+                            var mono = 0f
+                            var channelsRead = 0
+                            repeat(channelCount) {
+                                if (pcm.hasRemaining()) {
+                                    mono += pcm.get() / 32768f
+                                    channelsRead++
                                 }
                             }
-                            monoSample /= channelCount.coerceAtLeast(1)
-                            currentSumSq += (monoSample * monoSample)
-                            currentCount++
-                            totalSamplesRead++
-
-                            if (currentCount >= samplesPerHop) {
-                                rmsList.add(sqrt(currentSumSq / currentCount).toFloat())
-                                currentSumSq = 0.0
-                                currentCount = 0
+                            if (channelsRead > 0) {
+                                mono /= channelsRead
+                                currentSumSq += mono * mono
+                                currentCount++
+                                decodedFrames++
+                                if (currentCount >= samplesPerHop) {
+                                    rmsList.add(sqrt(currentSumSq / currentCount).toFloat())
+                                    currentSumSq = 0.0
+                                    currentCount = 0
+                                }
                             }
                         }
                     }
-                    codec.releaseOutputBuffer(outIndex, false)
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        isOutputDone = true
-                    }
+                    val endOfStream = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                    codec.releaseOutputBuffer(outputIndex, false)
+                    if (endOfStream) outputDone = true
                 }
             }
-
             return extractPeaksFromRms(rmsList, hopMs, sensitivity)
         } catch (e: Exception) {
             e.printStackTrace()
-            return defaultFallbackBeats()
+            return emptyList()
         } finally {
-            try {
-                codec?.stop()
-                codec?.release()
-            } catch (_: Exception) { }
-            try {
-                extractor.release()
-            } catch (_: Exception) { }
+            try { codec?.stop() } catch (_: Exception) { }
+            try { codec?.release() } catch (_: Exception) { }
+            try { extractor.release() } catch (_: Exception) { }
         }
     }
 
-    private fun extractPeaksFromRms(
-        rms: List<Float>,
-        hopMs: Int,
-        thresholdMult: Float
-    ): List<Long> {
-        if (rms.size < 10) return defaultFallbackBeats()
+    private fun extractPeaksFromRms(rms: List<Float>, hopMs: Int, thresholdMult: Float): List<Long> {
+        if (rms.size < 10) return emptyList()
+        val window = 20 // 200 ms local energy context at 10 ms per frame
+        val minGapFrames = (130 / hopMs).coerceAtLeast(1)
+        val beats = ArrayList<Long>()
+        var lastBeat = -minGapFrames
 
-        val window = 14
-        val minGapFrames = (130 / hopMs).coerceAtLeast(1) // Max ~7.5 blinks/sec
-        val beatsMs = ArrayList<Long>()
-        var lastBeatIdx = -minGapFrames
-
-        for (i in 1 until rms.size - 1) {
+        for (i in 1 until rms.lastIndex) {
             val start = (i - window / 2).coerceAtLeast(0)
-            val end = (i + window / 2).coerceAtMost(rms.size - 1)
+            val end = (i + window / 2).coerceAtMost(rms.lastIndex)
             var sum = 0f
             for (j in start..end) sum += rms[j]
-            val localAvg = (sum / (end - start + 1)) + 0.005f
-
-            val ratio = rms[i] / localAvg
-            if (rms[i] > 0.04f &&
-                ratio >= thresholdMult &&
-                rms[i] >= rms[i - 1] &&
-                rms[i] >= rms[i + 1] &&
-                (i - lastBeatIdx) >= minGapFrames
-            ) {
-                beatsMs.add((i * hopMs).toLong())
-                lastBeatIdx = i
+            val localAverage = (sum / (end - start + 1)) + 0.005f
+            val isPeak = rms[i] >= rms[i - 1] && rms[i] > rms[i + 1]
+            if (rms[i] > 0.04f && rms[i] / localAverage >= thresholdMult && isPeak && i - lastBeat >= minGapFrames) {
+                beats.add(i.toLong() * hopMs)
+                lastBeat = i
             }
         }
-
-        return beatsMs.ifEmpty { defaultFallbackBeats() }
+        return beats
     }
 }
